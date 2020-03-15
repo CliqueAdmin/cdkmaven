@@ -4,32 +4,80 @@ import software.amazon.awscdk.core.Construct;
 import software.amazon.awscdk.core.RemovalPolicy;
 import software.amazon.awscdk.core.Stack;
 import software.amazon.awscdk.core.StackProps;
-import software.amazon.awscdk.services.dynamodb.Attribute;
-import software.amazon.awscdk.services.dynamodb.AttributeType;
-import software.amazon.awscdk.services.dynamodb.Table;
-import software.amazon.awscdk.services.dynamodb.TableProps;
+import software.amazon.awscdk.services.dynamodb.*;
+import software.amazon.awscdk.services.lambda.Code;
+import software.amazon.awscdk.services.lambda.Function;
+import software.amazon.awscdk.services.lambda.IEventSource;
+import software.amazon.awscdk.services.lambda.Runtime;
+import software.amazon.awscdk.services.lambda.eventsources.SqsEventSource;
+import software.amazon.awscdk.services.sqs.DeadLetterQueue;
+import software.amazon.awscdk.services.sqs.Queue;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class HelloCdkStack extends Stack {
-    public HelloCdkStack(final Construct scope, final String id) {
+    public HelloCdkStack(final Construct scope, final String id) throws InterruptedException {
         this(scope, id, null);
     }
 
-    public HelloCdkStack(final Construct scope, final String id, final StackProps props) {
+    public HelloCdkStack(final Construct scope, final String id, final StackProps props) throws InterruptedException {
         super(scope, id, props);
 
         TableProps tableProps;
         Attribute partitionKey = Attribute.builder()
-                .name("itemId")
+                .name("IGHID")
                 .type(AttributeType.STRING)
                 .build();
+        Attribute titleKey = Attribute.builder()
+                .name("Title")
+                .type(AttributeType.STRING)
+                .build();
+        Attribute shelfLife = Attribute.builder()
+                .name("ShelfLife")
+                .type(AttributeType.NUMBER)
+                .build();
+        Attribute business = Attribute.builder()
+                .name("Business")
+                .type(AttributeType.NUMBER)
+                .build();
         tableProps = TableProps.builder()
-                .tableName("items")
+                .tableName("IGHItems")
+                .billingMode(BillingMode.PAY_PER_REQUEST)
                 .partitionKey(partitionKey)
-                // The default removal policy is RETAIN, which means that com.consort.cdk destroy will not attempt to delete
-                // the new table, and it will remain in your account until manually deleted. By setting the policy to
-                // DESTROY, com.consort.cdk destroy will delete the table (even if it has data in it)
                 .removalPolicy(RemovalPolicy.DESTROY)
                 .build();
-        Table dynamodbTable = new Table(this, "items", tableProps);
+        Table dynamodbTable = new Table(this, "IGHItems", tableProps);
+        Map<String, String> environmentVariables = new HashMap<String, String>();
+        environmentVariables.put("BUCKET", "bucket.getBucketName()");
+
+
+        Queue queue = Queue.Builder.create(this, "itemqueue").queueName("item-replenish-queue").build();
+        Queue itemDlq = Queue.Builder.create(this, "itemdlqueue").queueName("item-replenish-dlq").build();
+
+        SqsEventSource sqsEventSource = SqsEventSource.Builder.create(queue).batchSize(1).build();
+        List<IEventSource> eventSourceList = new ArrayList<>();
+        eventSourceList.add(sqsEventSource);
+
+        final Function itemsreplenishment = Function.Builder.create(this, "ItemsReplenishmentController")
+                .runtime(Runtime.JAVA_8)    // execution environment
+                .code(Code.fromAsset("cdk.out/itemsreplenishment-1.0.zip"))  // code loaded from the "lambda" directory
+                .handler("itemsreplenishment.events.ItemsReplenishmentSqsHandler")        // file is "hello", function is "handler"
+                .environment(environmentVariables)
+                .events(eventSourceList)
+                .deadLetterQueueEnabled(true)
+                .deadLetterQueue(itemDlq)
+                .build();
+
+        final Function itemsreplenishmentApi = Function.Builder.create(this, "ItemsReplenishmentApi")
+                .runtime(Runtime.JAVA_8)    // execution environment
+                .code(Code.fromAsset("cdk.out/itemsreplenishment-1.0.zip"))  // code loaded from the "lambda" directory
+                .handler("itemsreplenishment.ItemsReplenishmentController")        // file is "hello", function is "handler"
+                .environment(environmentVariables)
+                .build();
+
+
     }
 }
